@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VCF 队列合并服务</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --border: #d8dee6;
+    --text: #1f2933;
+    --muted: #6b7280;
+    --primary: #1d5fd1;
+    --primary-dim: #dbe6fb;
+    --ok: #15803d;
+    --ok-bg: #e7f5ec;
+    --err: #b91c1c;
+    --err-bg: #fdeaea;
+    --warn: #b45309;
+    --warn-bg: #fdf3e2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC",
+      system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+  }
+  header {
+    background: linear-gradient(120deg, #143a86, #1d5fd1);
+    color: #fff;
+    padding: 22px 28px;
+  }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; opacity: 0.85; font-size: 13px; }
+  main { max-width: 1080px; margin: 24px auto; padding: 0 20px 60px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+  }
+  .card h2 { margin: 0 0 14px; font-size: 17px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 6px 0 12px; }
+  input[type="file"] { margin: 8px 0; }
+  button {
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    padding: 9px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled { background: #9db4d8; cursor: not-allowed; }
+  button.secondary { background: #e5e9f0; color: var(--text); }
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.err { background: var(--err-bg); color: var(--err); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+  .badge.info { background: var(--primary-dim); color: var(--primary); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td {
+    text-align: left;
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-weight: 600; background: #f8fafc; }
+  .error-box {
+    background: var(--err-bg);
+    color: var(--err);
+    border: 1px solid #f3c6c6;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 10px 0;
+    font-size: 13px;
+  }
+  .error-box ul { margin: 6px 0 0; padding-left: 18px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  select {
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    min-width: 220px;
+  }
+  .status-done { color: var(--ok); font-weight: 600; }
+  .status-failed, .status-superseded, .status-aborted { color: var(--err); font-weight: 600; }
+  .status-running, .status-pending { color: var(--warn); font-weight: 600; }
+  .spinner {
+    display: inline-block;
+    width: 13px; height: 13px;
+    border: 2px solid var(--warn);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #toast {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    background: #111827;
+    color: #fff;
+    padding: 11px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.25s;
+    pointer-events: none;
+    max-width: 380px;
+  }
+  #toast.show { opacity: 1; }
+  .muted { color: var(--muted); }
+  .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>VCF 队列合并服务</h1>
+  <p>上传 2~3 份同参考版本、坐标排序的二倍体 VCF，选择重复样本唯一取用原件，生成关联分析用队列 VCF</p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. 上传分批检测 VCF</h2>
+    <p class="hint">
+      要求：同参考版本、坐标排序；每份同坐标仅一条记录；等位基因仅 ACGT；
+      FORMAT 限 GT/AD/PL；支持 .vcf 与 .vcf.gz。
+    </p>
+    <input id="fileInput" type="file" multiple accept=".vcf,.vcf.gz" />
+    <div>
+      <button id="uploadBtn">上传并校验</button>
+      <span id="uploadMsg" class="hint"></span>
+    </div>
+  </section>
+
+  <div id="result" hidden>
+    <section class="card">
+      <h2>2. 批次校验结果</h2>
+      <div id="batchMeta"></div>
+      <div id="batchErrors"></div>
+      <h3 style="font-size:14px;margin:16px 0 8px;">文件与样本来源</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>文件</th><th>状态</th><th>参考版本</th><th>样本数</th>
+            <th>位点数</th><th>样本列表</th><th>失败原因</th>
+          </tr>
+        </thead>
+        <tbody id="filesBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>3. 重复样本取用源选择</h2>
+      <p class="hint">
+        出现在多份文件中的样本必须选择唯一一个原件取用；未全部选定前不能生成。
+        选择变更会立即令旧结果与在途生成失效（改回也不能恢复）。
+      </p>
+      <table>
+        <thead>
+          <tr><th>样本</th><th>出现文件</th><th>取用原件</th><th>状态</th></tr>
+        </thead>
+        <tbody id="groupsBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>4. 生成与下载队列 VCF</h2>
+      <div class="pill-row">
+        <button id="generateBtn">开始生成</button>
+        <button id="downloadBtn" class="secondary" disabled>下载当前选择对应的完整 VCF</button>
+        <button id="refreshBtn" class="secondary">刷新状态</button>
+      </div>
+      <div id="genStatus" class="hint"></div>
+    </section>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let batchId = null;
+let pollTimer = null;
+
+function toast(msg) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), 3200);
+}
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function statusBadge(ok, okText, errText) {
+  return ok
+    ? `<span class="badge ok">${esc(okText)}</span>`
+    : `<span class="badge err">${esc(errText)}</span>`;
+}
+
+function genStatusLabel(status) {
+  const map = {
+    pending: "等待中", running: "生成中", done: "已完成",
+    failed: "失败", superseded: "已失效（选择变更）", aborted: "已中止"
+  };
+  return map[status] || status;
+}
+
+function renderBatch(data) {
+  batchId = data.id;
+  $("result").hidden = false;
+
+  $("batchMeta").innerHTML = `
+    <div class="pill-row">
+      <span class="badge ${data.batch_valid ? "ok" : "err"}">
+        批次${data.batch_valid ? "校验通过" : "存在阻断错误"}
+      </span>
+      <span class="badge info">参考版本：${esc(data.reference_version || "文件未声明")}</span>
+      <span class="badge info">选择版本号：${data.selection_version}</span>
+      <span class="badge info">文件数：${data.files.length}</span>
+    </div>`;
+
+  const errors = data.batch_errors || [];
+  $("batchErrors").innerHTML = errors.length
+    ? `<div class="error-box"><strong>批次级失败原因：</strong>
+         <ul>${errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`
+    : "";
+
+  $("filesBody").innerHTML = data.files.map((f) => `
+    <tr>
+      <td class="mono">${esc(f.original_name)}</td>
+      <td>${statusBadge(f.valid, "有效", "整份失败")}</td>
+      <td class="mono">${esc(f.reference_version || "未声明")}</td>
+      <td>${f.sample_count}</td>
+      <td>${f.record_count}</td>
+      <td>${f.samples.map(esc).join(", ") || '<span class="muted">—</span>'}</td>
+      <td>${f.error ? `<span class="status-failed">${esc(f.error)}</span>` : '<span class="muted">—</span>'}</td>
+    </tr>`).join("");
+
+  $("groupsBody").innerHTML = data.dup_groups.map((g) => {
+    const options = g.choices.map((c) =>
+      `<option value="${esc(c.file_id)}" ${g.chosen_file_id === c.file_id ? "selected" : ""}>
+        ${esc(c.file_name)}
+      </option>`).join("");
+    const stateBadge = g.chosen_file_id
+      ? '<span class="badge ok">已选定</span>'
+      : (g.is_duplicate
+          ? '<span class="badge err">重复样本，必须选择</span>'
+          : '<span class="badge info">唯一来源，自动可用</span>');
+    return `
+    <tr>
+      <td class="mono">${esc(g.sample_name)}</td>
+      <td>${g.choices.map((c) => esc(c.file_name)).join("<br>")}</td>
+      <td>
+        <select data-group="${esc(g.id)}" data-sample="${esc(g.sample_name)}">
+          <option value="" ${g.chosen_file_id ? "" : "selected"}>— 请选择取用原件 —</option>
+          ${options}
+        </select>
+      </td>
+      <td>${stateBadge}</td>
+    </tr>`;
+  }).join("");
+
+  document.querySelectorAll("select[data-group]").forEach((sel) => {
+    sel.addEventListener("change", () => submitSelection(sel.dataset.group, sel.value));
+  });
+
+  const gen = data.latest_generation;
+  if (gen) {
+    const running = gen.status === "running" || gen.status === "pending";
+    $("genStatus").innerHTML = `
+      <div style="margin:8px 0;">
+        ${running ? '<span class="spinner"></span>' : ""}
+        状态：<span class="status-${esc(gen.status)}">${esc(genStatusLabel(gen.status))}</span>
+        （生成时选择版本 ${gen.selection_version}）
+      </div>
+      ${gen.error ? `<div class="error-box">${esc(gen.error)}</div>` : ""}
+      <div class="muted">创建：${esc(gen.created_at || "")}
+        ${gen.finished_at ? "｜结束：" + esc(gen.finished_at) : ""}</div>`;
+    $("downloadBtn").disabled = !gen.downloadable;
+    if (running) schedulePoll();
+  } else {
+    $("genStatus").textContent = "尚未生成";
+    $("downloadBtn").disabled = true;
+  }
+
+  $("generateBtn").disabled = !data.ready_to_generate;
+  if (!data.ready_to_generate) {
+    const reason = !data.batch_valid
+      ? "批次存在阻断错误"
+      : (data.unresolved_samples.length
+          ? `仍有重复样本未选择：${data.unresolved_samples.join("、")}`
+          : "有效文件不足");
+    $("generateBtn").title = reason;
+  } else {
+    $("generateBtn").title = "";
+  }
+}
+
+async function fetchBatch() {
+  if (!batchId) return;
+  const resp = await fetch(`/api/batches/${batchId}`);
+  if (!resp.ok) { toast("刷新批次失败"); return; }
+  renderBatch(await resp.json());
+}
+
+function schedulePoll() {
+  if (pollTimer) return;
+  pollTimer = setInterval(async () => {
+    const resp = await fetch(`/api/batches/${batchId}`);
+    if (!resp.ok) { clearInterval(pollTimer); pollTimer = null; return; }
+    const data = await resp.json();
+    renderBatch(data);
+    const gen = data.latest_generation;
+    if (!gen || !["running", "pending"].includes(gen.status)) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }, 1500);
+}
+
+$("uploadBtn").addEventListener("click", async () => {
+  const input = $("fileInput");
+  if (!input.files.length) { toast("请先选择 2~3 份 VCF 文件"); return; }
+  if (input.files.length < 2 || input.files.length > 3) {
+    toast("每次必须上传 2~3 份文件"); return;
+  }
+  const form = new FormData();
+  for (const f of input.files) form.append("files", f);
+  $("uploadMsg").textContent = "上传与校验中…";
+  try {
+    const resp = await fetch("/api/batches", { method: "POST", body: form });
+    const payload = await resp.json();
+    if (!resp.ok) {
+      $("uploadMsg").textContent = "";
+      toast(payload.detail || "上传失败");
+      return;
+    }
+    $("uploadMsg").textContent = "上传完成";
+    renderBatch(payload);
+  } catch (err) {
+    $("uploadMsg").textContent = "";
+    toast("上传请求失败：" + err);
+  }
+});
+
+async function submitSelection(groupId, fileId) {
+  const form = new FormData();
+  form.append("file_id", fileId);
+  const resp = await fetch(
+    `/api/batches/${batchId}/selection/${groupId}`,
+    { method: "PUT", body: form }
+  );
+  const payload = await resp.json();
+  if (!resp.ok) { toast(payload.detail || "选择失败"); await fetchBatch(); return; }
+  toast("取用源已更新，旧结果与在途生成已立即失效");
+  renderBatch(payload);
+}
+
+$("generateBtn").addEventListener("click", async () => {
+  const resp = await fetch(`/api/batches/${batchId}/generate`, { method: "POST" });
+  const payload = await resp.json();
+  if (!resp.ok) { toast(payload.detail || "无法生成"); return; }
+  toast("生成任务已启动");
+  renderBatch(payload);
+});
+
+$("downloadBtn").addEventListener("click", () => {
+  if (!batchId) return;
+  window.location.href = `/api/batches/${batchId}/download`;
+});
+
+$("refreshBtn").addEventListener("click", fetchBatch);
+</script>
+</body>
+</html>

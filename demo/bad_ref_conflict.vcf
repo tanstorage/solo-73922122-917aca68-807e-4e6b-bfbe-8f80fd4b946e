@@ -1,0 +1,9 @@
+##fileformat=VCFv4.2
+##reference=GRCh38.demo.1.0
+##contig=<ID=chr1,length=100000>
+##contig=<ID=chr2,length=100000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred-scaled genotype likelihoods">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S5	S6
+chr1	100	.	AA	G	.	.	.	GT:AD:PL	0/1:10,5:0,9,200	0/0:14:0,20,230
